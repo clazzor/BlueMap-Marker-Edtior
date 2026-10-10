@@ -6,7 +6,7 @@
  *
  * Controls:
  * - Ctrl + X: Toggle editor panel and editing mode
- * - Shift + Left Click on Map: Add a new polygon point (vertex)
+ * - Shift + Left Click on Map: Add a new polygon point (vertex) / Move center
  * - Left Click + Drag point handle: Move an existing point
  * - Right Click point handle: Delete the point
  */
@@ -18,7 +18,11 @@
         top: 70px;
         right: 20px;
         width: 350px;
+        min-width: 280px;
+        min-height: 300px;
         max-height: 85vh;
+        resize: both;
+        overflow: hidden;
         background: rgba(18, 18, 18, 0.85);
         backdrop-filter: blur(14px);
         -webkit-backdrop-filter: blur(14px);
@@ -293,6 +297,42 @@
     .bmm-handle-dot:hover {
         transform: scale(1.5) !important;
     }
+
+    .bmm-tabs {
+        display: flex;
+        overflow-x: auto;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 0 10px;
+        flex-shrink: 0;
+    }
+    .bmm-tab {
+        background: transparent;
+        border: none;
+        color: rgba(255, 255, 255, 0.5);
+        padding: 10px 12px;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        transition: all 0.15s ease;
+        white-space: nowrap;
+    }
+    .bmm-tab:hover {
+        color: rgba(255, 255, 255, 0.8);
+    }
+    .bmm-tab.active {
+        color: #fff;
+        border-bottom-color: #007aff;
+    }
+    .bmm-tab-content {
+        display: none;
+        flex-direction: column;
+        gap: 14px;
+    }
+    .bmm-tab-content.active {
+        display: flex;
+    }
+
     `;
 
     class ExtrudeMarkerEditor {
@@ -310,6 +350,21 @@
             this.detail = "";
             this.position = { x: 0.0, y: 64.0, z: 0.0 };
             this.maxHeight = 120.0;
+            this.activeTab = "extrude"; // bmm, poi, html, line, shape, extrude, regular-polygon, extrude-regular-polygon
+            // Extra fields
+            this.poiIcon = "assets/poi.svg";
+            this.anchorX = 25;
+            this.anchorY = 45;
+            this.htmlText = "<div style='color:white;'>HTML Marker</div>";
+            this.lineWidth = 5;
+            this.depthTest = false;
+            this.shapeY = 64;
+            this.shapeMinY = 50;
+            this.shapeMaxY = 80;
+            this.listed = true;
+            this.minDistance = 10;
+            this.maxDistance = 10000000;
+
             this.markerSetId = "Claimed";
             this.owner = "c7aa24e3-2080-425b-93b4-a3a74952c3d9";
             this.fillColor = { r: 97, g: 221, b: 255, a: 0.2 };
@@ -326,11 +381,15 @@
             this.dragMoveHandler = null;
             this.dragUpHandler = null;
             this.cameraMoveListener = null;
+
+            // regular polygon setup
+            this.vertices = 12;
+            this.radius = 10;
+            this.angle = 0;
         }
 
         init() {
             // Patch BlueMap's HtmlMarker.dispose to prevent a native bug/crash
-            // where calling dispose on a removed HtmlMarker throws due to undefined element
             if (window.BlueMap && window.BlueMap.HtmlMarker) {
                 window.BlueMap.HtmlMarker.prototype.dispose = function () {
                     try {
@@ -344,8 +403,7 @@
                 };
             }
 
-            // Patch BlueMap's MarkerSet.updateMarkerSetsFromData to prevent it
-            // from deleting our bmm-editor-set during automatic map updates
+            // Patch BlueMap's MarkerSet.updateMarkerSetsFromData
             if (window.BlueMap && window.BlueMap.MarkerSet) {
                 const originalUpdateMarkerSets = window.BlueMap.MarkerSet.prototype.updateMarkerSetsFromData;
                 window.BlueMap.MarkerSet.prototype.updateMarkerSetsFromData = function (data = {}, ignore = []) {
@@ -398,13 +456,23 @@
                         <svg style="width: 16px; height: 16px; fill: currentColor;" viewBox="0 0 24 24">
                             <path d="M17,11H15V9H17M13,11H11V9H13M9,11H7V9H9M19,5H5C3.89,5 3,5.89 3,7V17A2,2 0 0,0 5,19H19A2,2 0 0,0 21,17V7C21,5.89 20.1,5 19,5Z" />
                         </svg>
-                        BMM Extrude Marker Editor
+                        Marker Editor
                     </div>
                     <button class="bmm-editor-close" id="bmm-editor-close">&times;</button>
                 </div>
-                <div class="bmm-editor-body">
+                <div class="bmm-tabs">
+                    <button class="bmm-tab" data-tab="poi">POI</button>
+                    <button class="bmm-tab" data-tab="html">HTML</button>
+                    <button class="bmm-tab" data-tab="line">Line</button>
+                    <button class="bmm-tab" data-tab="shape">Shape</button>
+                    <button class="bmm-tab active" data-tab="extrude">Extrude</button>
+                    <button class="bmm-tab" data-tab="regular-polygon">Reg. Poly</button>
+                    <button class="bmm-tab" data-tab="extrude-regular-polygon">Extrude Reg. Poly</button>
+                </div>
+                <div class="bmm-editor-body" id="bmm-editor-body-scroll">
+
                     <div class="bmm-field-group">
-                        <label for="bmm-input-label">Jméno vlastníka v MC</label>
+                        <label for="bmm-input-label">ID</label>
                         <input type="text" class="bmm-input" id="bmm-input-label" value="${this.label}">
                     </div>
                     <div class="bmm-field-group">
@@ -416,11 +484,30 @@
                             <label for="bmm-input-position">Základní Pozice (X, Y, Z)</label>
                             <input type="text" class="bmm-input" id="bmm-input-position" value="${this.position.x.toFixed(1)}, ${this.position.y.toFixed(1)}, ${this.position.z.toFixed(1)}">
                         </div>
-                        <div class="bmm-field-group">
+                        <div class="bmm-field-group tab-bmm">
                             <label for="bmm-input-max-height">Max Výška (Y)</label>
                             <input type="number" class="bmm-input" id="bmm-input-max-height" value="${this.maxHeight}" step="0.5">
                         </div>
                     </div>
+                    <div class="bmm-row tab-regular-polygon tab-extrude-regular-polygon">
+                        <div class="bmm-field-group">
+                            <label for="bmm-input-vertices">Počet vrcholů</label>
+                            <input type="number" class="bmm-input" id="bmm-input-vertices" value="${this.vertices}" min="3" step="1">
+                        </div>
+                        <div class="bmm-field-group">
+                            <label for="bmm-input-radius">Poloměr (Radius)</label>
+                            <input type="number" class="bmm-input" id="bmm-input-radius" value="${this.radius}" min="0.1" step="0.5">
+                        </div>
+                    </div>
+                    
+                    <div class="bmm-field-group tab-regular-polygon tab-extrude-regular-polygon">
+                        <label>Úhel (Angle °)</label>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <input type="range" class="bmm-input" id="bmm-slider-angle" min="0" max="360" step="1" value="${this.angle}" style="padding: 0; height: 14px; flex-grow: 1; cursor: pointer;">
+                            <input type="number" class="bmm-input" id="bmm-input-angle" value="${this.angle}" step="1" style="width: 75px; flex-shrink: 0;">
+                        </div>
+                    </div>
+
                     <div class="bmm-row" style="display: none;">
                         <div class="bmm-field-group">
                             <label for="bmm-input-marker-set">Marker Set</label>
@@ -431,7 +518,6 @@
                             <label for="bmm-input-owner">Owner UUID</label>
                             <input type="text" class="bmm-input" id="bmm-input-owner" value="${this.owner}">
                         </div>
-                        
                     </div>
                     <div class="bmm-field-group">
                         <label>Barva výplně a průhlednost</label>
@@ -466,7 +552,7 @@
                     </div>
 
                     <div class="bmm-field-group">
-                        <label for="bmm-json-text">BMM JSON raw data</label>
+                        <label for="bmm-json-text">BlueMap raw conf data</label>
                         <textarea class="bmm-input bmm-json-area" id="bmm-json-text" placeholder="Zde se vygeneruje JSON..."></textarea>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px;">
                             <button class="bmm-btn bmm-btn-secondary" id="bmm-btn-copy" style="font-size: 11px; padding: 6px;">Kopírovat</button>
@@ -477,10 +563,61 @@
                     <div class="bmm-instructions">
                         <strong>Nápověda:</strong><br>
                         • <b>Ctrl + X</b>: Zobrazit / Skrýt toto menu<br>
-                        • <b>Shift + Levý klik</b>: Vytvořit nový bod na mapě<br>
+                        • <b>Shift + Levý klik</b>: Vytvořit nový bod na mapě / Přesunout střední<br>
                         • <b>Alt + Levý klik</b>: Nastavit základní pozici (XYZ)<br>
                         • <b>Ctrl + Levý klik na bod</b>: Smazat bod
                     </div>
+                    <div class="bmm-field-group tab-poi">
+                        <label>Icon URL</label>
+                        <input type="text" class="bmm-input" id="bmm-input-poi-icon" value="${this.poiIcon}">
+                    </div>
+                    <div class="bmm-row tab-poi tab-html">
+                        <div class="bmm-field-group">
+                            <label>Anchor X</label>
+                            <input type="number" class="bmm-input" id="bmm-input-anchor-x" value="${this.anchorX}">
+                        </div>
+                        <div class="bmm-field-group">
+                            <label>Anchor Y</label>
+                            <input type="number" class="bmm-input" id="bmm-input-anchor-y" value="${this.anchorY}">
+                        </div>
+                    </div>
+                    <div class="bmm-field-group tab-html">
+                        <label>HTML Content</label>
+                        <textarea class="bmm-input" id="bmm-input-html" style="font-family:monospace;">${this.htmlText}</textarea>
+                    </div>
+                    <div class="bmm-field-group tab-line tab-shape tab-extrude tab-regular-polygon tab-extrude-regular-polygon">
+                        <label>Line Width</label>
+                        <input type="number" class="bmm-input" id="bmm-input-line-width" value="${this.lineWidth}">
+                    </div>
+                    <div class="bmm-field-group tab-shape tab-regular-polygon">
+                        <label>Shape Y</label>
+                        <input type="number" class="bmm-input" id="bmm-input-shape-y" value="${this.shapeY}">
+                    </div>
+                    <div class="bmm-row tab-extrude tab-extrude-regular-polygon">
+                        <div class="bmm-field-group">
+                            <label>Shape Min Y</label>
+                            <input type="number" class="bmm-input" id="bmm-input-shape-min-y" value="${this.shapeMinY}">
+                        </div>
+                        <div class="bmm-field-group">
+                            <label>Shape Max Y</label>
+                            <input type="number" class="bmm-input" id="bmm-input-shape-max-y" value="${this.shapeMaxY}">
+                        </div>
+                    </div>
+                    <div class="bmm-row tab-poi tab-html tab-line tab-shape tab-extrude tab-regular-polygon tab-extrude-regular-polygon">
+                        <label style="color: rgba(255,255,255,0.6); font-size:11px;"><input type="checkbox" id="bmm-input-listed" ${this.listed ? "checked" : ""}> Listed</label>
+                        <label style="color: rgba(255,255,255,0.6); font-size:11px;" class="tab-line tab-shape tab-extrude tab-regular-polygon tab-extrude-regular-polygon"><input type="checkbox" id="bmm-input-depth-test" ${this.depthTest ? "checked" : ""}> Depth Test</label>
+                    </div>
+                    <div class="bmm-row tab-poi tab-html tab-line tab-shape tab-extrude tab-regular-polygon tab-extrude-regular-polygon">
+                        <div class="bmm-field-group">
+                            <label>Min Distance</label>
+                            <input type="number" class="bmm-input" id="bmm-input-min-dist" value="${this.minDistance}">
+                        </div>
+                        <div class="bmm-field-group">
+                            <label>Max Distance</label>
+                            <input type="number" class="bmm-input" id="bmm-input-max-dist" value="${this.maxDistance}">
+                        </div>
+                    </div>
+    
                 </div>
                 <div class="bmm-footer">
                     <button class="bmm-btn bmm-btn-destructive" id="bmm-btn-clear" style="flex-grow: 1;">Vymazat</button>
@@ -582,10 +719,25 @@
                 this.detail = "";
                 this.position = { x: 0.0, y: 64.0, z: 0.0 };
                 this.maxHeight = 120.0;
+                this.poiIcon = "assets/poi.svg";
+                this.anchorX = 25;
+                this.anchorY = 45;
+                this.htmlText = "<div style='color:white;'>HTML Marker</div>";
+                this.lineWidth = 5;
+                this.depthTest = false;
+                this.shapeY = 64;
+                this.shapeMinY = 50;
+                this.shapeMaxY = 80;
+                this.listed = true;
+                this.minDistance = 10;
+                this.maxDistance = 10000000;
                 this.markerSetId = "Claimed";
                 this.owner = "c7aa24e3-2080-425b-93b4-a3a74952c3d9";
                 this.fillColor = { r: 97, g: 221, b: 255, a: 0.2 };
                 this.points = [];
+                this.vertices = 12;
+                this.radius = 10;
+                this.angle = 0;
                 this.updatePreview();
                 this.updateUIFields();
             });
@@ -593,7 +745,7 @@
             document.getElementById("bmm-btn-copy").addEventListener("click", () => {
                 let json = this.generateBmmJson();
                 navigator.clipboard.writeText(json).then(() => {
-                    alert("JSON zkopírován do schránky!");
+                    alert("zkopírováno do schránky!");
                 }).catch(err => {
                     console.error(err);
                     alert("Nepodařilo se kopírovat do schránky.");
@@ -603,7 +755,7 @@
             document.getElementById("bmm-btn-import-text").addEventListener("click", () => {
                 let text = document.getElementById("bmm-json-text").value;
                 if (text) {
-                    this.importBmmJson(text);
+                    this.importBlueMapConf(text);
                 } else {
                     alert("Nejprve vložte JSON do textového pole.");
                 }
@@ -617,7 +769,7 @@
                 if (file) {
                     let reader = new FileReader();
                     reader.onload = (evt) => {
-                        this.importBmmJson(evt.target.result);
+                        this.importBlueMapConf(evt.target.result);
                     };
                     reader.readAsText(file);
                 }
@@ -639,6 +791,89 @@
 
             document.getElementById("bmm-editor-close").addEventListener("click", () => {
                 this.toggle();
+            });
+
+            // Tabs logic
+            const updateTabVisibility = () => {
+                const tab = this.activeTab;
+                document.querySelectorAll(".bmm-tab").forEach(t => {
+                    t.classList.toggle("active", t.dataset.tab === tab);
+                });
+                
+                const allTabClasses = ["tab-bmm", "tab-poi", "tab-html", "tab-line", "tab-shape", "tab-extrude", "tab-regular-polygon", "tab-extrude-regular-polygon"];
+                
+                const setClass = (id, cls) => { let el = document.getElementById(id); if (el && el.parentElement) el.parentElement.classList.add(...cls); };
+                setClass("bmm-input-max-height", ["tab-bmm"]);
+                setClass("bmm-input-marker-set", ["tab-bmm"]);
+                setClass("bmm-input-owner", ["tab-bmm"]);
+                
+                let pointsEl = document.getElementById("bmm-points-list");
+                if (pointsEl) {
+                    const hidePoints = ["poi", "html", "regular-polygon", "extrude-regular-polygon"];
+                    pointsEl.parentElement.style.display = hidePoints.includes(tab) ? 'none' : 'block';
+                }
+                
+                let colorPicker = document.getElementById("bmm-color-picker");
+                if (colorPicker) {
+                    let cpGroup = colorPicker.closest('.bmm-field-group');
+                    if (cpGroup) cpGroup.style.display = (tab === 'poi' || tab === 'html') ? 'none' : 'flex';
+                }
+                
+                document.querySelectorAll(".bmm-editor-body .bmm-field-group, .bmm-editor-body .bmm-row").forEach(el => {
+                    let hasTabClass = false;
+                    let shouldShow = false;
+                    for (let c of allTabClasses) {
+                        if (el.classList.contains(c)) {
+                            hasTabClass = true;
+                            if (c === "tab-" + tab) shouldShow = true;
+                        }
+                    }
+                    if (hasTabClass) {
+                        el.style.display = shouldShow ? (el.classList.contains("bmm-row") ? "grid" : "flex") : "none";
+                    }
+                });
+                
+                // Update preview marker object type
+                this.switchPreviewMarkerType();
+                this.updatePreview();
+            };
+            
+            document.querySelectorAll(".bmm-tab").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    this.activeTab = e.target.dataset.tab;
+                    updateTabVisibility();
+                });
+            });
+            
+            setTimeout(updateTabVisibility, 10); // initial setup
+            
+            document.getElementById("bmm-input-poi-icon")?.addEventListener("input", e => { this.poiIcon = e.target.value; this.updatePreview(); });
+            document.getElementById("bmm-input-anchor-x")?.addEventListener("input", e => { this.anchorX = parseFloat(e.target.value)||0; this.updatePreview(); });
+            document.getElementById("bmm-input-anchor-y")?.addEventListener("input", e => { this.anchorY = parseFloat(e.target.value)||0; this.updatePreview(); });
+            document.getElementById("bmm-input-html")?.addEventListener("input", e => { this.htmlText = e.target.value; this.updatePreview(); });
+            document.getElementById("bmm-input-line-width")?.addEventListener("input", e => { this.lineWidth = parseFloat(e.target.value)||1; this.updatePreview(); });
+            document.getElementById("bmm-input-shape-y")?.addEventListener("input", e => { this.shapeY = parseFloat(e.target.value)||0; this.updatePreview(); });
+            document.getElementById("bmm-input-shape-min-y")?.addEventListener("input", e => { this.shapeMinY = parseFloat(e.target.value)||0; this.updatePreview(); });
+            document.getElementById("bmm-input-shape-max-y")?.addEventListener("input", e => { this.shapeMaxY = parseFloat(e.target.value)||0; this.updatePreview(); });
+            document.getElementById("bmm-input-listed")?.addEventListener("change", e => { this.listed = e.target.checked; this.updatePreview(); });
+            document.getElementById("bmm-input-depth-test")?.addEventListener("change", e => { this.depthTest = e.target.checked; this.updatePreview(); });
+            document.getElementById("bmm-input-min-dist")?.addEventListener("input", e => { this.minDistance = parseFloat(e.target.value)||0; this.updatePreview(); });
+            document.getElementById("bmm-input-max-dist")?.addEventListener("input", e => { this.maxDistance = parseFloat(e.target.value)||0; this.updatePreview(); });
+            document.getElementById("bmm-input-vertices")?.addEventListener("input", e => { this.vertices = parseInt(e.target.value)||3; this.updatePreview(); });
+            document.getElementById("bmm-input-radius")?.addEventListener("input", e => { this.radius = parseFloat(e.target.value)||0.1; this.updatePreview(); });
+            
+            // Connected slider and input box logic for the Angle
+            document.getElementById("bmm-input-angle")?.addEventListener("input", e => { 
+                this.angle = parseFloat(e.target.value)||0; 
+                let slider = document.getElementById("bmm-slider-angle");
+                if(slider) slider.value = this.angle;
+                this.updatePreview(); 
+            });
+            document.getElementById("bmm-slider-angle")?.addEventListener("input", e => { 
+                this.angle = parseFloat(e.target.value)||0; 
+                let input = document.getElementById("bmm-input-angle");
+                if(input) input.value = this.angle;
+                this.updatePreview(); 
             });
         }
 
@@ -680,6 +915,26 @@
             });
         }
 
+        
+        switchPreviewMarkerType() {
+            if (!this.markerSet) return;
+            let targetClass = window.BlueMap.ExtrudeMarker;
+            if (this.activeTab === "poi") targetClass = window.BlueMap.PoiMarker;
+            else if (this.activeTab === "html") targetClass = window.BlueMap.HtmlMarker;
+            else if (this.activeTab === "line") targetClass = window.BlueMap.LineMarker;
+            else if (this.activeTab === "shape" || this.activeTab === "regular-polygon") targetClass = window.BlueMap.ShapeMarker;
+            else if (this.activeTab === "extrude" || this.activeTab === "extrude-regular-polygon") targetClass = window.BlueMap.ExtrudeMarker;
+            
+            if (this.previewMarker && (!(this.previewMarker instanceof targetClass) || this.activeTab === "html")) {
+                this.markerSet.remove(this.previewMarker);
+                this.previewMarker = new targetClass("bmm-preview-marker");
+                this.markerSet.add(this.previewMarker);
+            } else if (!this.previewMarker) {
+                this.previewMarker = new targetClass("bmm-preview-marker");
+                this.markerSet.add(this.previewMarker);
+            }
+        }
+
         enableEditing() {
             let mapViewer = window.bluemap.mapViewer;
             if (!mapViewer) return;
@@ -703,7 +958,18 @@
                     e.preventDefault();
                     let hit = this.getTerrainIntersection(e.clientX, e.clientY);
                     if (hit) {
-                        this.addPoint(hit.x, hit.y, hit.z);
+                        if (["poi", "html", "regular-polygon", "extrude-regular-polygon"].includes(this.activeTab)) {
+                            // For POI/HTML/Regular Polygons, shift+click moves the marker position (center)
+                            this.position = {
+                                x: parseFloat(hit.x.toFixed(1)),
+                                y: parseFloat(hit.y.toFixed(1)),
+                                z: parseFloat(hit.z.toFixed(1))
+                            };
+                            this.updateUIFields();
+                            this.updatePreview();
+                        } else {
+                            this.addPoint(hit.x, hit.y, hit.z);
+                        }
                     }
                 } else if (e.altKey && e.button === 0) {
                     e.stopPropagation();
@@ -835,8 +1101,6 @@
                     isNew = true;
                 }
 
-                // 2D Viewport Screen Projection Check (NDC):
-                // Projects world position (x, y, z) into Normalized Device Coordinates [-1, +1]
                 let isVisibleOnScreen = true;
                 if (camera && screenVec && this.showHandles) {
                     screenVec.set(p.x, p.y + 0.15, p.z);
@@ -844,7 +1108,6 @@
 
                     let inScreenX = (screenVec.x >= -1.25 && screenVec.x <= 1.25);
                     let inScreenY = (screenVec.y >= -1.25 && screenVec.y <= 1.25);
-                    // In 2D Orthographic mode, Z elevation depth shouldn't cut off bottom-half points
                     let inScreenZ = camera.isOrthographicCamera ? true : (screenVec.z < 1.0);
 
                     isVisibleOnScreen = inScreenX && inScreenY && inScreenZ;
@@ -852,7 +1115,6 @@
                     isVisibleOnScreen = false;
                 }
 
-                // Explicitly toggle Three.js Object3D visibility so CSS2DRenderer skips traversal
                 handle.visible = isVisibleOnScreen;
                 if (handle.elementObject) {
                     handle.elementObject.visible = isVisibleOnScreen;
@@ -866,7 +1128,6 @@
                     classes: []
                 });
 
-                // Directly hide HTML DOM element so CSS2DRenderer & browser layout engine skip transform calculations
                 if (handle.element) {
                     handle.element.style.display = isVisibleOnScreen ? "" : "none";
                 }
@@ -909,71 +1170,104 @@
             });
         }
 
+        generateRegularPolygonVertices(center, radius, angleDeg, vertexCount){
+            const ret = [];
+            const angleRad = angleDeg * (Math.PI / 180);
+            const dtheta = (2 * Math.PI) / vertexCount;
+
+            for(let i = 0; i < vertexCount; i++){
+                const theta = angleRad + i * dtheta;
+                const x = radius * Math.cos(theta);
+                const z = radius * Math.sin(theta);
+                ret.push({
+                    x: x + center.x,
+                    z: z + center.z
+                });
+            }
+            return ret;
+        }  
+
         updatePreview() {
             if (!this.previewMarker || !this.markerSet) return;
-
+            
             let fillCol = { r: this.fillColor.r, g: this.fillColor.g, b: this.fillColor.b, a: this.fillColor.a };
-            let lineCol = { r: this.fillColor.r, g: this.fillColor.g, b: this.fillColor.b, a: 0.4 };
-            let minY = 0;
-            let maxY = this.maxHeight;
-
+            let lineCol = { r: this.fillColor.r, g: this.fillColor.g, b: this.fillColor.b, a: 1.0 };
+            
             let markerData = {
                 position: { x: this.position.x, y: this.position.y, z: this.position.z },
                 label: this.label,
                 detail: this.detail,
-                shape: this.points.map(p => ({ x: p.x, z: p.z })),
-                shapeMinY: minY,
-                shapeMaxY: maxY,
-                depthTest: true,
-                lineWidth: 2,
-                lineColor: lineCol,
-                fillColor: fillCol
+                minDistance: this.minDistance,
+                maxDistance: this.maxDistance,
+                listed: this.listed
             };
-
-            if (this.points.length >= 3) {
+            
+            let canShow = true;
+            if (this.activeTab === "poi") {
+                markerData.icon = this.poiIcon;
+                markerData.anchor = { x: this.anchorX, y: this.anchorY };
+            } else if (this.activeTab === "html") {
+                markerData.html = this.htmlText;
+                markerData.anchor = { x: this.anchorX, y: this.anchorY };
+            } else if (this.activeTab === "line") {
+                markerData.line = this.points.map(p => ({ x: p.x, y: p.y, z: p.z }));
+                markerData.depthTest = this.depthTest;
+                markerData.lineWidth = this.lineWidth;
+                markerData.lineColor = lineCol;
+                if (this.points.length < 2) canShow = false;
+            } else if (this.activeTab === "shape") {
+                markerData.shape = this.points.map(p => ({ x: p.x, z: p.z }));
+                markerData.shapeY = this.shapeY;
+                markerData.depthTest = this.depthTest;
+                markerData.lineWidth = this.lineWidth;
+                markerData.lineColor = lineCol;
+                markerData.fillColor = fillCol;
+                if (this.points.length < 3) canShow = false;
+            } else if (this.activeTab === "extrude" || this.activeTab === "bmm") {
+                markerData.shape = this.points.map(p => ({ x: p.x, z: p.z }));
+                markerData.shapeMinY = this.activeTab === "bmm" ? 0 : this.shapeMinY;
+                markerData.shapeMaxY = this.activeTab === "bmm" ? this.maxHeight : this.shapeMaxY;
+                markerData.depthTest = this.depthTest;
+                markerData.lineWidth = this.lineWidth;
+                markerData.lineColor = lineCol;
+                markerData.fillColor = fillCol;
+                if (this.points.length < 3) canShow = false;
+            } else if(this.activeTab === "regular-polygon" || this.activeTab === "extrude-regular-polygon"){
+                canShow = this.radius > 0;
+                if(canShow){
+                    markerData.position = {x: this.position.x, y: this.position.y, z: this.position.z};
+                    markerData.shape = this.generateRegularPolygonVertices(this.position, this.radius, this.angle, this.vertices);
+                    if (this.activeTab === "extrude-regular-polygon") {
+                        markerData.shapeMinY = this.shapeMinY;
+                        markerData.shapeMaxY = this.shapeMaxY;
+                    } else {
+                        markerData.shapeY = this.shapeY;
+                    }
+                    markerData.depthTest = this.depthTest;
+                    markerData.lineWidth = this.lineWidth;
+                    markerData.lineColor = lineCol;
+                    markerData.fillColor = fillCol;
+                }
+            }
+            
+            if (canShow) {
                 this.previewMarker.visible = true;
+                try{
                 this.previewMarker.updateFromData(markerData);
+                }catch(e){
+                    //¯\_(ツ)_/¯
+                }
             } else {
                 this.previewMarker.visible = false;
             }
 
-            // High performance pooled handles update
             this.updateHandles();
-
             this.updateUIPointsList();
             this.updateUILiveJson();
         }
 
-        // Optimized update: only updates geometry and single handle coordinate during drag
         updatePreviewMarkerOnly() {
-            if (!this.previewMarker) return;
-
-            let fillCol = { r: this.fillColor.r, g: this.fillColor.g, b: this.fillColor.b, a: this.fillColor.a };
-            let lineCol = { r: this.fillColor.r, g: this.fillColor.g, b: this.fillColor.b, a: 1.0 };
-            let minY = this.position.y;
-            let maxY = this.maxHeight;
-
-            let markerData = {
-                position: { x: this.position.x, y: this.position.y, z: this.position.z },
-                label: this.label,
-                detail: this.detail,
-                shape: this.points.map(p => ({ x: p.x, z: p.z })),
-                shapeMinY: minY,
-                shapeMaxY: maxY,
-                depthTest: true,
-                lineWidth: 2,
-                lineColor: lineCol,
-                fillColor: fillCol
-            };
-
-            if (this.points.length >= 3) {
-                this.previewMarker.visible = true;
-                this.previewMarker.updateFromData(markerData);
-            } else {
-                this.previewMarker.visible = false;
-            }
-
-            this.updateUILiveJson();
+            this.updatePreview(); // Just reuse for safety
         }
 
         startDragging(index) {
@@ -1063,81 +1357,197 @@
 
         generateBmmJson() {
             let mapName = window.bluemap?.mapViewer?.map?.data?.id || "world";
-            if (!this.label) this.label = "Unnamed";
-            let lowercaseLabel = this.label.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-
-            let posX = parseFloat(this.position.x).toFixed(1);
-            let posY = parseFloat(this.position.y).toFixed(1);
-            let posZ = parseFloat(this.position.z).toFixed(1);
-            let positionStr = `${posX},${posY},${posZ}`;
-
-            let colorStr = `${this.fillColor.r},${this.fillColor.g},${this.fillColor.b},${this.fillColor.a.toFixed(2)}`;
-            let maxH = parseFloat(this.maxHeight).toFixed(1);
-
-            let edges = this.points.map(p => {
-                let px = parseFloat(p.x).toFixed(1);
-                let pz = parseFloat(p.z).toFixed(1);
-                return `"${px},${pz}"`;
-            });
-
-            let edgesStr = edges.length > 0 ? "\n" + edges.map(e => "          " + e).join(",\n") + "\n        " : "";
-
-            let detailPart = (this.detail && this.detail.trim() !== "") ? `
-      "DETAIL": {
-        "type": "de.miraculixx.bmm.map.data.Box.BoxString",
-        "value": "${this.detail}"
-      },` : "";
-
-            let json = `{
-  "${lowercaseLabel}": {
+            let lbl = this.label || "Unnamed";
+            let id = lbl.toLowerCase().replace(/[^a-z0-9_-]/g, "_") || "marker";
+            
+            if (this.activeTab === "bmm") {
+                // Original BMM logic
+                let edges = this.points.map(p => `"${parseFloat(p.x).toFixed(1)},${parseFloat(p.z).toFixed(1)}"`).join(",\n          ");
+                let detailPart = (this.detail) ? `\n      "DETAIL": { "type": "de.miraculixx.bmm.map.data.Box.BoxString", "value": "${this.detail}" },` : "";
+                return `{
+  "${id}": {
     "owner": "${this.owner}",
     "type": "EXTRUDE",
     "attributes": {
-      "MAP": {
-        "type": "de.miraculixx.bmm.map.data.Box.BoxString",
-        "value": "${mapName}"
-      },
-      "MARKER_SET": {
-        "type": "de.miraculixx.bmm.map.data.Box.BoxString",
-        "value": "${this.markerSetId}"
-      },
-      "HEIGHT": {
-        "type": "de.miraculixx.bmm.map.data.Box.BoxFloat",
-        "value": 0.0
-      },
-      "LINE_WIDTH": {
-        "type": "de.miraculixx.bmm.map.data.Box.BoxInt",
-        "value": 0
-      },
-      "FILL_COLOR": {
-        "type": "de.miraculixx.bmm.map.data.Box.BoxColor",
-        "value": "${colorStr}"
-      },
-      "POSITION": {
-        "type": "de.miraculixx.bmm.map.data.Box.BoxVector3d",
-        "value": "${positionStr}"
-      },
-      "MAX_HEIGHT": {
-        "type": "de.miraculixx.bmm.map.data.Box.BoxFloat",
-        "value": ${maxH}
-      },
-      "ID": {
-        "type": "de.miraculixx.bmm.map.data.Box.BoxString",
-        "value": "${lowercaseLabel}"
-      },
-      "LABEL": {
-        "type": "de.miraculixx.bmm.map.data.Box.BoxString",
-        "value": "${this.label}"
-      },
-${detailPart}
-      "ADD_EDGE": {
-        "type": "de.miraculixx.bmm.map.data.Box.BoxVector2dList",
-        "value": [${edgesStr}]
-      }
+      "MAP": { "type": "de.miraculixx.bmm.map.data.Box.BoxString", "value": "${mapName}" },
+      "MARKER_SET": { "type": "de.miraculixx.bmm.map.data.Box.BoxString", "value": "${this.markerSetId}" },
+      "HEIGHT": { "type": "de.miraculixx.bmm.map.data.Box.BoxFloat", "value": 0.0 },
+      "LINE_WIDTH": { "type": "de.miraculixx.bmm.map.data.Box.BoxInt", "value": 0 },
+      "FILL_COLOR": { "type": "de.miraculixx.bmm.map.data.Box.BoxColor", "value": "${this.fillColor.r},${this.fillColor.g},${this.fillColor.b},${this.fillColor.a.toFixed(2)}" },
+      "POSITION": { "type": "de.miraculixx.bmm.map.data.Box.BoxVector3d", "value": "${this.position.x},${this.position.y},${this.position.z}" },
+      "MAX_HEIGHT": { "type": "de.miraculixx.bmm.map.data.Box.BoxFloat", "value": ${this.maxHeight} },
+      "ID": { "type": "de.miraculixx.bmm.map.data.Box.BoxString", "value": "${id}" },
+      "LABEL": { "type": "de.miraculixx.bmm.map.data.Box.BoxString", "value": "${lbl}" },${detailPart}
+      "ADD_EDGE": { "type": "de.miraculixx.bmm.map.data.Box.BoxVector2dList", "value": [
+          ${edges}
+        ] }
     }
   }
 }`;
-            return json;
+            }
+            
+            // Native BlueMap conf
+            let base = {
+                type: this.activeTab,
+                position: { x: this.position.x, y: this.position.y, z: this.position.z },
+                label: lbl,
+                sorting: 0,
+                listed: this.listed,
+                "min-distance": this.minDistance,
+                "max-distance": this.maxDistance
+            };
+            
+            if (this.detail) base.detail = this.detail;
+            
+            if (this.activeTab === "poi") {
+                base.icon = this.poiIcon;
+                base.anchor = { x: this.anchorX, y: this.anchorY };
+            } else if (this.activeTab === "html") {
+                base.html = this.htmlText;
+                base.anchor = { x: this.anchorX, y: this.anchorY };
+            } else if (this.activeTab === "line") {
+                base.line = this.points.map(p => ({ x: p.x, y: p.y, z: p.z }));
+                base["depth-test"] = this.depthTest;
+                base["line-width"] = this.lineWidth;
+                base["line-color"] = { r: this.fillColor.r, g: this.fillColor.g, b: this.fillColor.b, a: 1.0 };
+            } else if (this.activeTab === "shape") {
+                base.shape = this.points.map(p => ({ x: p.x, z: p.z }));
+                base["shape-y"] = this.shapeY;
+                base["depth-test"] = this.depthTest;
+                base["line-width"] = this.lineWidth;
+                base["line-color"] = { r: this.fillColor.r, g: this.fillColor.g, b: this.fillColor.b, a: 1.0 };
+                base["fill-color"] = this.fillColor;
+            } else if (this.activeTab === "extrude") {
+                base.shape = this.points.map(p => ({ x: p.x, z: p.z }));
+                base["shape-min-y"] = this.shapeMinY;
+                base["shape-max-y"] = this.shapeMaxY;
+                base["depth-test"] = this.depthTest;
+                base["line-width"] = this.lineWidth;
+                base["line-color"] = { r: this.fillColor.r, g: this.fillColor.g, b: this.fillColor.b, a: 1.0 };
+                base["fill-color"] = this.fillColor;
+            } else if (this.activeTab === "regular-polygon" || this.activeTab === "extrude-regular-polygon"){
+                if(this.radius > 0){
+                    base.shape = this.generateRegularPolygonVertices(this.position, this.radius, this.angle, this.vertices);
+                }else{
+                    base.shape = [];
+                }
+                
+                if (this.activeTab === "extrude-regular-polygon") {
+                    base.type = "extrude";
+                    base["shape-min-y"] = this.shapeMinY;
+                    base["shape-max-y"] = this.shapeMaxY;
+                } else {
+                    base.type = "shape";
+                    base["shape-y"] = this.shapeY;
+                }
+                
+                base["depth-test"] = this.depthTest;
+                base["line-width"] = this.lineWidth;
+                base["line-color"] = { r: this.fillColor.r, g: this.fillColor.g, b: this.fillColor.b, a: 1.0 };
+                base["fill-color"] = this.fillColor;
+            }
+            
+            let finalObj = {};
+            finalObj[id] = base;
+            let stringified = JSON.stringify(finalObj, null, 2);
+            return stringified.slice(1, -1).replace(/"([^"]+)":/g, '$1:');
+        }
+
+        importBlueMapConf(confStr) {
+            try {
+                // Parse the HOCON/Loose-JSON text
+                let json = ("{" + confStr + "}").replace(/([{,]\s*)([a-zA-Z0-9_-]+)\s*:/g, '$1"$2":');
+                let parsed = JSON.parse(json);
+                let id = Object.keys(parsed)[0];
+                let marker = parsed[id];
+
+                if (!marker || !marker.type) {
+                    throw new Error("Invalid structure: missing marker type.");
+                }
+
+                // 1. Import Common Properties
+                this.label = marker.label || id;
+                this.detail = marker.detail || "";
+                
+                if (marker.position) {
+                    this.position = { 
+                        x: marker.position.x || 0, 
+                        y: marker.position.y || 64, 
+                        z: marker.position.z || 0 
+                    };
+                }
+
+                this.listed = marker.listed !== false;
+                this.minDistance = marker["min-distance"] !== undefined ? marker["min-distance"] : 10;
+                this.maxDistance = marker["max-distance"] !== undefined ? marker["max-distance"] : 10000000;
+                
+                if (marker["depth-test"] !== undefined) this.depthTest = marker["depth-test"];
+                if (marker["line-width"] !== undefined) this.lineWidth = marker["line-width"];
+
+                // Import color (favor fill-color, fallback to line-color)
+                let colorObj = marker["fill-color"] || marker["line-color"];
+                if (colorObj) {
+                    this.fillColor = {
+                        r: colorObj.r || 0,
+                        g: colorObj.g || 0,
+                        b: colorObj.b || 0,
+                        a: colorObj.a !== undefined ? colorObj.a : 0.2
+                    };
+                }
+
+                this.points = [];
+                this.activeTab = marker.type; // "poi", "html", "line", "shape", or "extrude"
+
+                // 2. Import Type-Specific Properties & Points
+                if (this.activeTab === "poi") {
+                    this.poiIcon = marker.icon || "assets/poi.svg";
+                    if (marker.anchor) {
+                        this.anchorX = marker.anchor.x || 25;
+                        this.anchorY = marker.anchor.y || 45;
+                    }
+                } 
+                else if (this.activeTab === "html") {
+                    this.htmlText = marker.html || "<div style='color:white;'>HTML Marker</div>";
+                    if (marker.anchor) {
+                        this.anchorX = marker.anchor.x || 25;
+                        this.anchorY = marker.anchor.y || 45;
+                    }
+                } 
+                else if (this.activeTab === "line") {
+                    if (Array.isArray(marker.line)) {
+                        this.points = marker.line.map(p => ({ x: p.x, y: p.y, z: p.z }));
+                    }
+                } 
+                else if (this.activeTab === "shape" || this.activeTab === "regular-polygon") {
+                    this.shapeY = marker["shape-y"] !== undefined ? marker["shape-y"] : 64;
+                    if (Array.isArray(marker.shape)) {
+                        // Shapes only store X and Z, we use the base position Y for the 3D visual editor points
+                        this.points = marker.shape.map(p => ({ x: p.x, y: this.position.y, z: p.z }));
+                    }
+                } 
+                else if (this.activeTab === "extrude") {
+                    this.shapeMinY = marker["shape-min-y"] !== undefined ? marker["shape-min-y"] : 50;
+                    this.shapeMaxY = marker["shape-max-y"] !== undefined ? marker["shape-max-y"] : 80;
+                    if (Array.isArray(marker.shape)) {
+                        this.points = marker.shape.map(p => ({ x: p.x, y: this.position.y, z: p.z }));
+                    }
+                }
+
+                // 3. Update the UI
+                this.updateUIFields();
+                this.updatePreview();
+
+                // Trigger a click on the corresponding tab button to ensure visibility logic runs
+                let tabBtn = document.querySelector(`.bmm-tab[data-tab="${this.activeTab}"]`);
+                if (tabBtn) {
+                    tabBtn.click();
+                }
+
+                alert("Import úspěšný!");
+            } catch (e) {
+                console.error(e);
+                alert("Nebylo možné načíst konfiguraci. Ujistěte se, že formát je správný:\n" + e.message);
+            }
         }
 
         importBmmJson(jsonStr) {
@@ -1231,6 +1641,11 @@ ${detailPart}
 
             document.getElementById("bmm-color-opacity").value = this.fillColor.a;
             document.getElementById("bmm-opacity-text").innerText = Math.round(this.fillColor.a * 100) + "%";
+            
+            document.getElementById("bmm-input-vertices").value = this.vertices;
+            if (document.getElementById("bmm-input-radius")) document.getElementById("bmm-input-radius").value = this.radius;
+            if (document.getElementById("bmm-input-angle")) document.getElementById("bmm-input-angle").value = this.angle;
+            if (document.getElementById("bmm-slider-angle")) document.getElementById("bmm-slider-angle").value = this.angle;
         }
 
         updateUIPointsList() {
@@ -1250,7 +1665,6 @@ ${detailPart}
                 return;
             }
 
-            // Virtual Scrolling (Windowing): total height represents all items, but only visible items are rendered
             const ITEM_HEIGHT = 28;
             const totalHeight = this.points.length * ITEM_HEIGHT;
             const containerHeight = container.clientHeight || 120;
